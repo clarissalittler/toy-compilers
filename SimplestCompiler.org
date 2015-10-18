@@ -1,0 +1,290 @@
+* A Simple Compiler to Javascript
+   In this document we're going to design a small simple language and compile it down to javascript. The goal is to get some small experience with translating languages down to javascript as a substrate. 
+
+   Why javascript?
+   + It can /essentially/ run anywhere
+   + It's becoming a common backend, e.g. elm, agda, idris, even haskell
+   + It can be used as an untyped lambda calculus for targeting purposes
+
+These reasons make compiling to javascript certainly a worthy goal for someone who wants to experiment with language implementation and design. 
+** Language Spec
+*** Syntax
+    For ease of parsing we'll be using s-expressions for all syntax.
+
+    A program consists of an ordered sequence of s-expressions.
+
+    The basic syntactic terms shall be
+
+    + variables
+    + function abstraction
+    + function application
+    + if-statements
+    + built-in-functions
+
+  Examples of syntax below:
+
+  #+BEGIN_SRC lisp :exports code
+    (\ (x : Int) (x))
+
+    (if tm1 tm2 tm3)
+
+    (tm1 tm2)
+
+    (+ tm1 tm2)
+  #+END_SRC
+
+*** Built-in constructs
+    The built in types will be 
+    + functions
+    + integers
+    + booleans
+    + unit
+
+There will be built in functions for 
+
+    + addition
+    + subtraction
+    + comparison
+    + equality of numbers
+    + boolean not
+    + printing a number to console
+*** AST
+Here we present the basic Haskell code for the AST
+#+BEGIN_SRC haskell :exports code :tangle AST.hs
+  module AST where
+
+  type Var = String
+
+  data Type = TFun Type Type
+            | TInt
+            | TBool
+            | TUnit
+    deriving (Eq,Show)
+
+  data Tm = TmConst String
+          | TmInt Int
+          | TmBool Bool
+          | TmUnit
+          | TmLam Var Type Tm
+          | TmApp Tm Tm
+          | TmIf Tm Tm Tm
+          | TmVar Var
+    deriving (Eq, Show)
+
+  consts :: [(String,Type)]
+  consts = [("+",TFun TInt (TFun TInt TInt)),
+            ("-",TFun TInt (TFun TInt TInt)),
+            ("<",TFun TInt (TFun TInt TBool)),
+            ("=",TFun TInt (TFun TInt TBool)),
+            ("!",TFun TBool TBool),
+            ("print", TFun TInt TUnit)
+           ]
+#+END_SRC
+** Parsing
+#+BEGIN_SRC haskell :exports code :tangle Parser.hs
+  module Parser where
+
+  import Text.Parsec
+  import Text.Parsec.Combinator
+  import Text.Parsec.String
+  import Text.Parsec.Char
+
+  import AST
+
+  parseVar :: Parser Tm
+  parseVar = do 
+    s <- many1 letter
+    return $ TmVar s
+
+  parseVarBind :: Parser (Var,Type)
+  parseVarBind = between (char '(') (char ')') $ do
+    v <- many1 letter
+    spaces
+    char ':'
+    spaces
+    t <- parseType
+    return (v,t)
+
+  parseType :: Parser Type
+  parseType = (string "Int" >> return TInt) <|>
+              (string "Bool" >> return TBool) <|>
+              (string "Unit" >> return TUnit) <|> do 
+                string "fun"
+                spaces
+                t1 <- parseType
+                spaces
+                t2 <- parseType
+                return (TFun t1 t2)
+
+  parseLam :: Parser Tm
+  parseLam = between (char '(') (char ')') $ do
+          char '\\'
+          spaces
+          (v,t) <- parseVarBind
+          spaces
+          tm <- parseTm
+          return $ TmLam v t tm
+
+  parseNum :: Parser Tm
+  parseNum = do
+     s <- many1 digit
+     return $ TmInt (read s)
+
+  parseBool :: Parser Tm
+  parseBool = (string "true" >> return (TmBool True)) <|>
+              (string "false" >> return (TmBool False))
+
+  parseUnit :: Parser Tm
+  parseUnit = (string "tt" >> return TmUnit)
+
+  parseConst :: Parser Tm
+  parseConst = foldl1 (\ a1 a2 -> a1 <|> a2) $ map aux ["+","-","=","<","!","print"]
+     where aux s = string s >> return (TmConst s)
+
+  parseApp :: Parser Tm
+  parseApp = between (char '(') (char ')') $ do
+               t <- parseTm
+               spaces
+               t' <- parseTm
+               return (TmApp t t')
+
+  parseIf :: Parser Tm
+  parseIf = between (char '(') (char ')') $ do
+              tb <- parseTm
+              spaces
+              t1 <- parseTm
+              spaces
+              t2 <- parseTm
+              return $ TmIf tb t1 t2
+              
+  parseTm :: Parser Tm
+  parseTm = (try parseLam) <|> parseNum <|> (try parseBool) <|> (try parseUnit) <|> (try parseConst) <|> (try parseApp) <|> (try parseVar) <|> parseIf
+
+  testParser :: String -> Tm
+  testParser s = case parse parseTm "" s of
+                   Right t -> t
+#+END_SRC
+*** Typechecking
+    Our typechecking is the more or less obvious algorithm you'd expect
+#+BEGIN_SRC haskell :exports code :tangle Typechecking.hs
+  module Typechecking where
+
+  import AST 
+  import Control.Monad
+  import Control.Monad.Reader
+  import Control.Monad.Trans.Maybe
+
+  type CheckM a = MaybeT (Reader [(String,Type)]) a
+
+
+  check :: Tm -> CheckM Type
+  check (TmConst c) = case lookup c consts of
+                        Nothing -> mzero
+                        Just t -> return t
+  check (TmVar v) = do
+    env <- ask
+    case lookup v env of
+      Nothing -> mzero
+      Just t -> return t                 
+  check (TmInt _) = return TInt
+  check (TmBool _) = return TBool
+  check TmUnit = return TUnit
+  check (TmApp t1 t2) = do
+    ty1 <- check t1
+    ty2 <- check t2
+    case ty1 of
+      TFun ty11 ty12 -> if ty2 == ty11 then return ty12 else mzero
+      _ -> mzero
+  check (TmIf tm1 tm2 tm3) = do
+    ty1 <- check tm1
+    ty2 <- check tm2
+    ty3 <- check tm3
+    if ty1 == TBool && ty2 == ty3 then return ty2 else mzero
+  check (TmLam v t tm) = do 
+    t2 <- local (\ r -> (v,t) : r) (check tm)
+    return (TFun t t2)
+
+  checker :: Tm -> Maybe Type
+  checker a = runReader (runMaybeT (check a)) []
+#+END_SRC
+** Compilation
+#+BEGIN_SRC haskell :exports code :tangle Compiler.hs
+  module Compiler where
+
+  import AST
+  import Control.Monad.Writer
+  import Data.Char (toLower)
+
+  type JS = Writer String
+
+  printC :: String
+  printC = "function (x) {\n console.log(x); \n return {}; }"
+
+  plusC :: String
+  plusC = "function (x) {\n return (function (y) {return (x+y)}) }"
+
+  minusC :: String
+  minusC = "function (x) {\n return (function (y) {return (x-y)}) }"
+
+  lessC :: String
+  lessC = "function (x) {\n return (function (y) {return (x < y)}) }"
+
+  equalC :: String
+  equalC = "function (x) {\n return (function (y) {return (x == y)}) }"
+
+  notC :: String
+  notC = "function (x) {return (! x)}"
+
+  constsC :: [(String,String)]
+  constsC = [("+",plusC),
+             ("-",minusC),
+             ("<",lessC),
+             ("=",equalC),
+             ("!",notC),
+             ("print", printC)
+            ]
+
+  compile :: Tm -> JS ()
+  compile (TmConst c) = case lookup c constsC of
+                          Just r -> tell r
+  compile (TmInt i) = tell (show i)
+  compile (TmBool b) = tell $ map toLower (show b)
+  compile TmUnit = tell "{}"
+  compile (TmApp t1 t2) = do 
+    compile t1
+    tell "("
+    compile t2
+    tell ")"
+  compile (TmVar v) = tell v
+  compile (TmIf tm1 tm2 tm3) = do
+    tell "if ("
+    compile tm1
+    tell ") {\n"
+    compile tm2
+    tell "\n } \n"
+    tell "else {\n"
+    compile tm3
+    tell "\n }"
+  compile (TmLam v _ tm) = do
+    tell $ "function (" ++ v ++ ") {\n"
+    tell "return "
+    compile tm
+    tell "\n }"
+
+  compiler :: Tm -> String
+  compiler = execWriter . compile
+#+END_SRC
+** Proper Pipeline
+#+BEGIN_SRC haskell :exports code :tangle SimpleCompile.hs
+  import AST
+  import Parser
+  import Typechecking
+  import Compiler
+
+  main = do
+    program <- getLine
+    let ast = testParser program
+    case checker ast of
+      Nothing -> error "didn't type check"
+      Just t -> putStrLn $ compiler ast
+#+END_SRC
