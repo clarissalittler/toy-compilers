@@ -1,0 +1,108 @@
+#+TITLE: Delta: A Functional Language with Side Effects
+#+AUTHOR: Clarissa Littler
+#+OPTIONS: toc:nil
+
+* Introduction
+In this document we're designing a language based off of our experiments in [[file:SimplestCompiler.org::*A%20Simple%20Compiler%20to%20Javascript][A Simple Compiler to Javascript]], where we're going to do a few more complicated things here. First, we're going to have a notion of /mutable/ variables and have "unit" as a type so that we can CL style functional programs that also can use state. 
+
+What's going to make it different than CL is that it's going to be a language that has algebraic datatypes and typing rules and all of that.
+* Syntax
+We're going to take a syntax where any single expression or statement is a single s-expression, with statements separated by newlines.
+
+Variables are declared as 
+
+#+BEGIN_EXAMPLE
+   (var thing 10)
+#+END_EXAMPLE
+named functions are declared as 
+#+BEGIN_EXAMPLE
+   (fun f [(x : int) (y : bool)] body)
+#+END_EXAMPLE
+
+Datatypes are declared as 
+(data name (const-name-1 type1 type2 type3 type4) (const-name-2 type1 type2 type 3) ...)
+* AST
+
+  The abstract syntax tree is pretty basic. The set of types include integers, booleans, functions, unit (needed for typing variable setting and creation), and general type formers which must be defined as part of a data-declaration.
+
+Terms include constants, constructors, simple injectors for booleans and ints, a unit, lambda abstraction and application, variable usage (both local/lambda and global), variable-as-container creation, variable-as-container setting, data-type access and sequencing. Sequencing is technically redundant because you could just use lambdas but, hey, technically everything beyond the untyped lambda calculus is redundant so let's not care about that right now.
+
+#+BEGIN_SRC haskell :exports code :tangle DeltaAST.hs
+  module DeltaAST where
+
+  import Data.List
+  import Control.Monad.State
+  import Control.Monad
+
+  type Var = String
+
+  data Data = Data String [(String, [Type])]
+
+  data Type = TyInt
+            | TyBool
+            | TyFun Type Type
+            | TyUnit
+            | TyFormer String
+            deriving (Eq,Show)
+
+  data Term = TmConst String
+            | TmCon String
+            | TmBool Bool
+            | TmInt Int
+            | TmUnit
+            | TmLam Var Type Term 
+            | TmApp Term Term
+            | TmVar Var
+            | TmSet Var Term
+            | TmCreate Var Type
+            | TmAccess Term Int
+	    | TmSeq Term Term
+            deriving (Eq,Show)
+#+END_SRC
+* Typing
+  The typing rules are going to be pretty simple. The typing function will take a table of constants ~[(String,Type)]~, an environment of variables in scope ~[(Var, Type)]~, and a term and return a type.
+
+  Let's try writing that here
+  #+BEGIN_SRC haskell :exports code :tangle DeltaAST.hs
+
+    type ConstEnv = [(String,Type)]
+    type ConEnv = [(String, Type)]
+    type VarEnv = [(String, Type)]
+
+    type TypingMonad = StateT VarEnv Maybe
+
+    local sf m = do
+      sold <- get
+      put (sf sold)
+      a <- m
+      put sold
+      return a
+
+    typing :: ConstEnv -> ConEnv -> Term -> TypingMonad Type
+    typing cst con (TmConst c) = lift $ lookup c cst
+    typing cst con (TmCon c) = lift $ lookup c con
+    typing cst con (TmBool _) = return TyBool
+    typing cst con (TmInt _) = return TyInt
+    typing _ _ TmUnit = return TyUnit
+    typing cst con (TmLam v t1 tm) = do
+      t2 <- local ((v,t1):) $ typing cst con tm
+      return $ TyFun t1 t2
+    typing cst con (TmApp tm1 tm2) = do
+      tyapp <- typing cst con tm1
+      case tyapp of
+        (TyFun ty1 ty2) -> do
+                   tyarg <- typing cst con tm1
+                   if (tyarg == ty1) then return ty2 else mzero
+        _ -> Nothing
+    typing cst con (TmVar v) = lift $ lookup v vs
+    typing cst con vs (TmSet v tm) = do
+      tv <- gets (lookup v)
+      ttm <- typing cst con vs t
+      if tv == ttm then return tv else Nothing
+    typing cst con vs (TmCreate v t) = do
+  
+  #+END_SRC
+  
+* Interpreter
+* Parsing
+* Compilation
