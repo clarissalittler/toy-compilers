@@ -1,0 +1,1 @@
+This repository is mostly for, as the name might imply, weird little experiments for compiling tiny languages in a way that should be easy to explain and have novices read. I'm sticking mostly to "let's compile to javascript!" because it's at least a nice way to demonstrate the semantics. 
