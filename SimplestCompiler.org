@@ -257,14 +257,11 @@ Here we present the basic Haskell code for the AST
     tell ")"
   compile (TmVar v) = tell v
   compile (TmIf tm1 tm2 tm3) = do
-    tell "if ("
     compile tm1
-    tell ") {\n"
+    tell " ? "
     compile tm2
-    tell "\n } \n"
-    tell "else {\n"
+    tell " : "
     compile tm3
-    tell "\n }"
   compile (TmLam v _ tm) = do
     tell $ "function (" ++ v ++ ") {\n"
     tell "return "
