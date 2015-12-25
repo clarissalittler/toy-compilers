@@ -1,0 +1,304 @@
+* A Still Very Simple Compiler to Javascript
+  In this document we're going to be doing something very similar to the language in [[file:SimplestCompiler.org::*A%20Simple%20Compiler%20to%20Javascript][A Simple Compiler to Javascript]] except rather than having the extremely ugly compilation-via-strings we'll at least make the separation between the final printed code and the abstract syntax tree of the JavaScript fragment we're using.
+** Language Spec
+*** Syntax
+    For ease of parsing we'll be using s-expressions for all syntax.
+
+    A program consists of an ordered sequence of s-expressions.
+
+    The basic syntactic terms shall be
+
+    + variables
+    + function abstraction
+    + function application
+    + if-statements
+    + built-in-functions
+
+  Examples of syntax below:
+
+  #+BEGIN_SRC lisp :exports code
+    (\ (x : Int) (x))
+
+    (if tm1 tm2 tm3)
+
+    (tm1 tm2)
+
+    (+ tm1 tm2)
+  #+END_SRC
+
+*** Built-in constructs
+    The built in types will be 
+    + functions
+    + integers
+    + booleans
+    + unit
+
+There will be built in functions for 
+
+    + addition
+    + subtraction
+    + comparison
+    + equality of numbers
+    + boolean not
+    + printing a number to console
+*** AST
+Here we present the basic Haskell code for the AST
+#+BEGIN_SRC haskell :exports code :tangle AST.hs
+  module AST where
+
+  type Var = String
+
+  data Type = TFun Type Type
+            | TInt
+            | TBool
+            | TUnit
+    deriving (Eq,Show)
+
+  data Tm = TmConst String
+          | TmInt Int
+          | TmBool Bool
+          | TmUnit
+          | TmLam Var Type Tm
+          | TmApp Tm Tm
+          | TmIf Tm Tm Tm
+          | TmVar Var
+    deriving (Eq, Show)
+
+  consts :: [(String,Type)]
+  consts = [("+",TFun TInt (TFun TInt TInt)),
+            ("-",TFun TInt (TFun TInt TInt)),
+            ("<",TFun TInt (TFun TInt TBool)),
+            ("=",TFun TInt (TFun TInt TBool)),
+            ("!",TFun TBool TBool),
+            ("print", TFun TInt TUnit)
+           ]
+#+END_SRC
+
+
+** Parsing
+#+BEGIN_SRC haskell :exports code :tangle Parser.hs
+  module Parser where
+
+  import Text.Parsec
+  import Text.Parsec.Combinator
+  import Text.Parsec.String
+  import Text.Parsec.Char
+
+  import AST
+
+  parseVar :: Parser Tm
+  parseVar = do 
+    s <- many1 letter
+    return $ TmVar s
+
+  parseVarBind :: Parser (Var,Type)
+  parseVarBind = between (char '(') (char ')') $ do
+    v <- many1 letter
+    spaces
+    char ':'
+    spaces
+    t <- parseType
+    return (v,t)
+
+  parseType :: Parser Type
+  parseType = (string "Int" >> return TInt) <|>
+              (string "Bool" >> return TBool) <|>
+              (string "Unit" >> return TUnit) <|> do 
+                string "fun"
+                spaces
+                t1 <- parseType
+                spaces
+                t2 <- parseType
+                return (TFun t1 t2)
+
+  parseLam :: Parser Tm
+  parseLam = between (char '(') (char ')') $ do
+          char '\\'
+          spaces
+          (v,t) <- parseVarBind
+          spaces
+          tm <- parseTm
+          return $ TmLam v t tm
+
+  parseNum :: Parser Tm
+  parseNum = do
+     s <- many1 digit
+     return $ TmInt (read s)
+
+  parseBool :: Parser Tm
+  parseBool = (string "true" >> return (TmBool True)) <|>
+              (string "false" >> return (TmBool False))
+
+  parseUnit :: Parser Tm
+  parseUnit = (string "tt" >> return TmUnit)
+
+  parseConst :: Parser Tm
+  parseConst = foldl1 (\ a1 a2 -> a1 <|> a2) $ map aux ["+","-","=","<","!","print"]
+     where aux s = string s >> return (TmConst s)
+
+  parseApp :: Parser Tm
+  parseApp = between (char '(') (char ')') $ do
+               t <- parseTm
+               spaces
+               t' <- parseTm
+               return (TmApp t t')
+
+  parseIf :: Parser Tm
+  parseIf = between (char '(') (char ')') $ do
+              tb <- parseTm
+              spaces
+              t1 <- parseTm
+              spaces
+              t2 <- parseTm
+              return $ TmIf tb t1 t2
+              
+  parseTm :: Parser Tm
+  parseTm = (try parseLam) <|> parseNum <|> (try parseBool) <|> (try parseUnit) <|> (try parseConst) <|> (try parseApp) <|> (try parseVar) <|> parseIf
+
+  testParser :: String -> Tm
+  testParser s = case parse parseTm "" s of
+                   Right t -> t
+#+END_SRC
+*** Typechecking
+    Our typechecking is the more or less obvious algorithm you'd expect
+#+BEGIN_SRC haskell :exports code :tangle Typechecking.hs
+  module Typechecking where
+
+  import AST 
+  import Control.Monad
+  import Control.Monad.Reader
+  import Control.Monad.Trans.Maybe
+
+  type CheckM a = MaybeT (Reader [(String,Type)]) a
+
+
+  check :: Tm -> CheckM Type
+  check (TmConst c) = case lookup c consts of
+                        Nothing -> mzero
+                        Just t -> return t
+  check (TmVar v) = do
+    env <- ask
+    case lookup v env of
+      Nothing -> mzero
+      Just t -> return t                 
+  check (TmInt _) = return TInt
+  check (TmBool _) = return TBool
+  check TmUnit = return TUnit
+  check (TmApp t1 t2) = do
+    ty1 <- check t1
+    ty2 <- check t2
+    case ty1 of
+      TFun ty11 ty12 -> if ty2 == ty11 then return ty12 else mzero
+      _ -> mzero
+  check (TmIf tm1 tm2 tm3) = do
+    ty1 <- check tm1
+    ty2 <- check tm2
+    ty3 <- check tm3
+    if ty1 == TBool && ty2 == ty3 then return ty2 else mzero
+  check (TmLam v t tm) = do 
+    t2 <- local (\ r -> (v,t) : r) (check tm)
+    return (TFun t t2)
+
+  checker :: Tm -> Maybe Type
+  checker a = runReader (runMaybeT (check a)) []
+#+END_SRC
+
+** JavaScript AST
+   #+BEGIN_SRC haskell :exports code :tangle JSAST.hs
+     module JSAST where
+     -- this isn't going to be all of that javascript language as an AST just a subset
+
+     import Text.PrettyPrint
+     import Text.PrettyPrint.HughesPJClass
+
+     data JNum = JInt Int | JFloat Float
+
+     data JExpr = JFCall JExpr [JExpr]
+                | JThis
+                | JObjLit [(String, JExpr)]
+                | JBool Bool
+                | JNum JNum
+                | JNull
+                | JNaN
+                | JVar String
+                | JObjDot JExpr String
+                | JObjBrack JExpr JExpr
+                | JLam [String] [JStmt]
+                | JArrayLit [JExpr]
+                | JTern JExpr JExpr JExpr
+                | JBinOp String JExpr JExpr
+		| JUnOp String JExpr
+
+     jEmpty = JObjLit []
+
+     data JStmt = JFunDecl String [String] [Jstmt]
+                | JIf JExpr [JStmt] [Jstmt]
+                | JExpr JExpr
+                | JForNum String JExpr JExpr JExpr [Jstmt]
+		| JReturn JExpr
+
+     -- we're using the pretty library for doing our string construction, since we'd have to reinvent
+     -- chunks of it anyway in order to do this in a non-ugly way
+
+     commaSep ls = hcat $ punctuate comma ls
+     bodyPrint = braces . vcat . map (\s -> nest 2 (pPrint s))
+
+     instance Pretty JNum where
+         pPrint (Jint i) = int i
+         pPrint (JFloat f) = float f
+
+     instance Pretty JExpr where
+         pPrint (JFCall f args) = pPrint f <> (parens $ commaSep $ map pPrint args)
+         pPrint JThis = text "this"
+         pPrint (JObjLit es) = braces $ commaSep $ map aux es
+             where aux (key,val) = text key <+> colon <+> pPrint val
+         pPrint (JBool True) = text "true"
+         pPrint (JBool False) = text "false"
+         pPrint (JNum n) = pPrint n
+         pPrint JNull = text "null"
+         pPrint JNaN = text "NaN"
+         pPrint (JVar str) = text str
+         pPrint (JObjDot j s) = pPrint j <> text "." <> text s
+         pPrint (JObjBrack o a) = pPrint o <> brackets (pPrint a)
+         pPrint (JLam args body) = text "function" <> (parens $ commaSep (map text args)) <> (bodyPrint body)
+             where aux stmt = nest 2 $ pprint stmt
+         pPrint (JArrayLit js) = braces $ commaSep $ map pPrint js
+         pPrint (JTern arg tbranch fbranch) = (pPrint arg) <+> "?" (pPrint tbranch) <+> colon <+> (pPrint fbranch)
+         pPrint (JBinOp op left right) = pPrint left <+> text op <+> pPrint right
+	 pPrint (JUnOp op arg) = pPrint op <+> pPrint arg
+
+     instance Pretty JStmt where
+         pPrint (JFunDecl nom args body) = text "function" <+> text nom <+> (parens $ commaSep (map text args)) <> (bodyPrint body)
+         pPrint (JIf disc tbody fbody) = text "if" <+> parens (pPrint disc) $+$ (bodyPrint tbody) $+$ (bodyPrint fbody)
+         pPrint (JExpr e) = pPrint e <> semi
+	 pPrint (JReturn e) = text "return" <+> pPrint e <> semi
+         pPrint (JForNum v start end inc body) = undefined
+   #+END_SRC
+** Compilation
+   #+BEGIN_SRC haskell :exports code :tangle Compiler.hs
+     module Compiler where
+
+     import AST
+     import JSAST
+
+     -- the way our language works we just need to export to expressions
+     compile :: AST -> JExpr 
+     compile (TmConst s) = constDispatch s
+     compile (TmInt i) = JNum $ JInt i
+     compile TmUnit = jEmpty
+     compile (TmLam v _ t) = JLam [v] [JReturn (compile t)]
+     compile (TApp f arg) = JFCall (compile f) [(compile arg)]
+     compile (TmIf disc tbranch fbranch) = JTern (compile disc) (compile tbranch) (compile fbranch)
+     compile (TmVar v) = JVar v
+
+     binopHelper :: String -> JExpr
+     binopHelper s = JLam [x] [JReturn $ JLam [y] [JReturn $ JBinOp s (JVar x) (JVar y)]]
+
+     constDispatch :: String -> JExpr
+     constDispatch "+" = binopHelper "+"
+     constDispatch "-" = binopHelper "-"
+     constDispatch "<" = binopHelper "<"
+     constDispatch "=" = binopHelper "="
+     constDispatch "!" = JLam [x] [JReturn $ JUnOp "!" (JVar x)]
+     constDispatch "print" = JLam [x] [JExpr $ JFCall (JObjDot (JVar "Console") "log") [JVar x]]
+   #+END_SRC
