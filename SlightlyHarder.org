@@ -77,6 +77,8 @@ Here we present the basic Haskell code for the AST
 
 ** Parsing
 #+BEGIN_SRC haskell :exports code :tangle Parser.hs
+  {-# LANGUAGE FlexibleContexts #-}
+
   module Parser where
 
   import Text.Parsec
@@ -231,10 +233,10 @@ Here we present the basic Haskell code for the AST
 
      jEmpty = JObjLit []
 
-     data JStmt = JFunDecl String [String] [Jstmt]
-                | JIf JExpr [JStmt] [Jstmt]
+     data JStmt = JFunDecl String [String] [JStmt]
+                | JIf JExpr [JStmt] [JStmt]
                 | JExpr JExpr
-                | JForNum String JExpr JExpr JExpr [Jstmt]
+                | JForNum String JExpr JExpr JExpr [JStmt]
 		| JReturn JExpr
 
      -- we're using the pretty library for doing our string construction, since we'd have to reinvent
@@ -243,8 +245,10 @@ Here we present the basic Haskell code for the AST
      commaSep ls = hcat $ punctuate comma ls
      bodyPrint = braces . vcat . map (\s -> nest 2 (pPrint s))
 
+     newlineBraces d = lbrace $+$ d $+$ rbrace
+
      instance Pretty JNum where
-         pPrint (Jint i) = int i
+         pPrint (JInt i) = int i
          pPrint (JFloat f) = float f
 
      instance Pretty JExpr where
@@ -260,10 +264,10 @@ Here we present the basic Haskell code for the AST
          pPrint (JVar str) = text str
          pPrint (JObjDot j s) = pPrint j <> text "." <> text s
          pPrint (JObjBrack o a) = pPrint o <> brackets (pPrint a)
-         pPrint (JLam args body) = text "function" <> (parens $ commaSep (map text args)) <> (bodyPrint body)
-             where aux stmt = nest 2 $ pprint stmt
+         pPrint (JLam args body) = text "function" <+> (parens $ commaSep (map text args)) <+> (bodyPrint body)
+             where aux stmt = nest 2 $ pPrint stmt
          pPrint (JArrayLit js) = braces $ commaSep $ map pPrint js
-         pPrint (JTern arg tbranch fbranch) = (pPrint arg) <+> "?" (pPrint tbranch) <+> colon <+> (pPrint fbranch)
+         pPrint (JTern arg tbranch fbranch) = (pPrint arg) <+> text "?" <+> (pPrint tbranch) <+> colon <+> (pPrint fbranch)
          pPrint (JBinOp op left right) = pPrint left <+> text op <+> pPrint right
 	 pPrint (JUnOp op arg) = pPrint op <+> pPrint arg
 
@@ -281,24 +285,44 @@ Here we present the basic Haskell code for the AST
      import AST
      import JSAST
 
+     import Text.PrettyPrint
+     import Text.PrettyPrint.HughesPJClass
+
      -- the way our language works we just need to export to expressions
-     compile :: AST -> JExpr 
+     compile :: Tm -> JExpr 
      compile (TmConst s) = constDispatch s
+     compile (TmBool b) = JBool b
      compile (TmInt i) = JNum $ JInt i
      compile TmUnit = jEmpty
      compile (TmLam v _ t) = JLam [v] [JReturn (compile t)]
-     compile (TApp f arg) = JFCall (compile f) [(compile arg)]
+     compile (TmApp f arg) = JFCall (compile f) [(compile arg)]
      compile (TmIf disc tbranch fbranch) = JTern (compile disc) (compile tbranch) (compile fbranch)
      compile (TmVar v) = JVar v
 
      binopHelper :: String -> JExpr
-     binopHelper s = JLam [x] [JReturn $ JLam [y] [JReturn $ JBinOp s (JVar x) (JVar y)]]
+     binopHelper s = JLam ["x"] [JReturn $ JLam ["y"] [JReturn $ JBinOp s (JVar "x") (JVar "y")]]
 
      constDispatch :: String -> JExpr
      constDispatch "+" = binopHelper "+"
      constDispatch "-" = binopHelper "-"
      constDispatch "<" = binopHelper "<"
      constDispatch "=" = binopHelper "="
-     constDispatch "!" = JLam [x] [JReturn $ JUnOp "!" (JVar x)]
-     constDispatch "print" = JLam [x] [JExpr $ JFCall (JObjDot (JVar "Console") "log") [JVar x]]
+     constDispatch "!" = JLam ["x"] [JReturn $ JUnOp "!" (JVar "x")]
+     constDispatch "print" = JLam ["x"] [JExpr $ JFCall (JObjDot (JVar "console") "log") [JVar "x"]]
    #+END_SRC
+** Pipeline
+#+BEGIN_SRC haskell :exports code :tangle SlightlyHarder.hs
+  import AST
+  import Parser
+  import Typechecking
+  import Compiler
+  import Text.PrettyPrint
+  import Text.PrettyPrint.HughesPJClass
+
+  main = do
+    program <- getLine
+    let ast = testParser program
+    case checker ast of
+      Nothing -> error "didn't type check"
+      Just t -> putStrLn $ render $ pPrint $ compile ast
+#+END_SRC
