@@ -230,6 +230,7 @@ Here we present the basic Haskell code for the AST
                 | JTern JExpr JExpr JExpr
                 | JBinOp String JExpr JExpr
 		| JUnOp String JExpr
+                | JNew JExpr -- should be a a function call
 
      jEmpty = JObjLit []
 
@@ -238,6 +239,7 @@ Here we present the basic Haskell code for the AST
                 | JExpr JExpr
                 | JForNum String JExpr JExpr JExpr [JStmt]
 		| JReturn JExpr
+		| JWhile JExpr [Jstmt]
 
      -- we're using the pretty library for doing our string construction, since we'd have to reinvent
      -- chunks of it anyway in order to do this in a non-ugly way
