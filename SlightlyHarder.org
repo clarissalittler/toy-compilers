@@ -229,20 +229,22 @@ Here we present the basic Haskell code for the AST
                 | JArrayLit [JExpr]
                 | JTern JExpr JExpr JExpr
                 | JBinOp String JExpr JExpr
-		| JUnOp String JExpr
-		| JAssign JExpr JExpr
-                | JNew JExpr -- should be a a function call
+                | JUnOp String JExpr
+                | JAssign JExpr JExpr
+                | JNew JExpr [JExpr] -- first should eval to a function the rest are the args
 
      jEmpty = JObjLit []
 
      data JStmt = JFunDecl String [String] [JStmt]
-                | JIf JExpr [JStmt] [JStmt]
+                | JIf JExpr [JStmt] [JStmt] 
                 | JExpr JExpr
                 | JForNum String JExpr JExpr JExpr [JStmt]
-		| JReturn JExpr
-		| JForIn String JExpr [Jstmt]
-		| JWhile JExpr [Jstmt]
+                | JReturn JExpr
+                | JForIn String JExpr [Jstmt]
+                | JWhile JExpr [Jstmt]
+                | JThrow JExpr
 
+     type JProgram = [Jstmt]
 
      -- we're using the pretty library for doing our string construction, since we'd have to reinvent
      -- chunks of it anyway in order to do this in a non-ugly way
@@ -274,14 +276,19 @@ Here we present the basic Haskell code for the AST
          pPrint (JArrayLit js) = braces $ commaSep $ map pPrint js
          pPrint (JTern arg tbranch fbranch) = (pPrint arg) <+> text "?" <+> (pPrint tbranch) <+> colon <+> (pPrint fbranch)
          pPrint (JBinOp op left right) = pPrint left <+> text op <+> pPrint right
-	 pPrint (JUnOp op arg) = pPrint op <+> pPrint arg
+         pPrint (JUnOp op arg) = pPrint op <+> pPrint arg
+         pPrint (JAssign v e) = pPrint v <+> text "=" <+> pPrint e
+         pPrint (JNew f as) = text "new" <+> pPrint f <> parens (commaSep $ map pPrint as)
 
      instance Pretty JStmt where
          pPrint (JFunDecl nom args body) = text "function" <+> text nom <+> (parens $ commaSep (map text args)) <> (bodyPrint body)
          pPrint (JIf disc tbody fbody) = text "if" <+> parens (pPrint disc) $+$ (bodyPrint tbody) $+$ (bodyPrint fbody)
          pPrint (JExpr e) = pPrint e <> semi
-	 pPrint (JReturn e) = text "return" <+> pPrint e <> semi
+         pPrint (JReturn e) = text "return" <+> pPrint e <> semi
          pPrint (JForNum v start end inc body) = undefined
+         pPrint (JForIn v e body) = undefined
+         pPrint (JWhile disc body) = undefined
+         pPrint (JThrow e) = text "throw" <+> pPrint e
    #+END_SRC
 ** Compilation
    #+BEGIN_SRC haskell :exports code :tangle Compiler.hs
