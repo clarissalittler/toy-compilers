@@ -240,6 +240,7 @@ Here we present the basic Haskell code for the AST
                 | JExpr JExpr
                 | JForNum String JExpr JExpr JExpr [JStmt]
 		| JReturn JExpr
+		| JForIn String JExpr [Jstmt]
 		| JWhile JExpr [Jstmt]
 
 
